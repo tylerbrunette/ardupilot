@@ -31,20 +31,25 @@ AP_BattMonitor_SMBus_Solo::AP_BattMonitor_SMBus_Solo(AP_BattMonitor &mon,
                                                    AP_BattMonitor_Params &params,
                                                    AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev)
     : AP_BattMonitor_SMBus(mon, mon_state, params, std::move(dev))
-{
-    _pec_supported = true;
-}
+{}
 
 void AP_BattMonitor_SMBus_Solo::timer()
 {
-    uint8_t buff[8];
+    uint8_t buff[20];
     uint32_t tnow = AP_HAL::micros();
 
+    if (!_pec_confirmed) {
+        if (!check_pec_support()) {
+            return;
+        }
+        _pec_confirmed = true;
+    }
 
-    // read cell voltages
-    if (read_block(BATTMONITOR_SMBUS_SOLO_CELL_VOLTAGE, buff, 8, false)) {
+    // read cell voltages, cell count = readlen / 2
+    uint8_t readlen = read_block(BATTMONITOR_SMBUS_SOLO_CELL_VOLTAGE, buff, 20, false);
+    if(readlen) {
         float pack_voltage_mv = 0.0f;
-        for (uint8_t i = 0; i < BATTMONITOR_SMBUS_SOLO_NUM_CELLS; i++) {
+        for (uint8_t i = 0; i < (readlen>>1); i++) {
             uint16_t cell = buff[(i * 2) + 1] << 8 | buff[i * 2];
             _state.cell_voltages.cells[i] = cell;
             pack_voltage_mv += (float)cell;
@@ -97,41 +102,5 @@ void AP_BattMonitor_SMBus_Solo::timer()
     read_temp();
 
     read_serial_number();
-}
-
-// read_block - returns number of characters read if successful, zero if unsuccessful
-uint8_t AP_BattMonitor_SMBus_Solo::read_block(uint8_t reg, uint8_t* data, uint8_t max_len, bool append_zero) const
-{
-    uint8_t buff[max_len+2];    // buffer to hold results (2 extra byte returned holding length and PEC)
-
-    // read bytes
-    if (!_dev->read_registers(reg, buff, sizeof(buff))) {
-        return 0;
-    }
-
-    // get length
-    uint8_t bufflen = buff[0];
-
-    // sanity check length returned by smbus
-    if (bufflen == 0 || bufflen > max_len) {
-        return 0;
-    }
-
-    // check PEC
-    uint8_t pec = get_PEC(AP_BATTMONITOR_SMBUS_I2C_ADDR, reg, true, buff, bufflen+1);
-    if (pec != buff[bufflen+1]) {
-        return 0;
-    }
-
-    // copy data (excluding PEC)
-    memcpy(data, &buff[1], bufflen);
-
-    // optionally add zero to end
-    if (append_zero) {
-        data[bufflen] = '\0';
-    }
-
-    // return success
-    return bufflen;
 }
 

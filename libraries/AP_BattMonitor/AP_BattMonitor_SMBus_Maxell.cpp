@@ -40,9 +40,12 @@ AP_BattMonitor_SMBus_Maxell::AP_BattMonitor_SMBus_Maxell(AP_BattMonitor &mon,
 
 void AP_BattMonitor_SMBus_Maxell::timer()
 {
-	// check if PEC is supported
-    if (!check_pec_support()) {
-        return;
+    if (!_pec_confirmed) {
+        if (!check_pec_support()) {
+            return;
+        }
+        check_manufacturer();
+        _pec_confirmed = true;
     }
 
     uint16_t data;
@@ -87,89 +90,20 @@ void AP_BattMonitor_SMBus_Maxell::timer()
     read_serial_number();
 }
 
-// read_block - returns number of characters read if successful, zero if unsuccessful
-uint8_t AP_BattMonitor_SMBus_Maxell::read_block(uint8_t reg, uint8_t* data, bool append_zero) const
+// read manufacturer name and disable PEC if Hitachi
+bool AP_BattMonitor_SMBus_Maxell::check_manufacturer()
 {
-    // get length
-    uint8_t bufflen;
-    // read byte (first byte indicates the number of bytes in the block)
-    if (!_dev->read_registers(reg, &bufflen, 1)) {
-        return 0;
-    }
-
-    // sanity check length returned by smbus
-    if (bufflen == 0 || bufflen > SMBUS_READ_BLOCK_MAXIMUM_TRANSFER) {
-        return 0;
-    }
-
-    // buffer to hold results (2 extra byte returned holding length and PEC)
-    const uint8_t read_size = bufflen + 1 + (_pec_supported ? 1 : 0);
-    uint8_t buff[read_size];
-
-    // read bytes
-    if (!_dev->read_registers(reg, buff, read_size)) {
-        return 0;
-    }
-
-    // check PEC
-    if (_pec_supported) {
-        uint8_t pec = get_PEC(AP_BATTMONITOR_SMBUS_I2C_ADDR, reg, true, buff, bufflen+1);
-        if (pec != buff[bufflen+1]) {
-            return 0;
-        }
-    }
-
-    // copy data (excluding PEC)
-    memcpy(data, &buff[1], bufflen);
-
-    // optionally add zero to end
-    if (append_zero) {
-        data[bufflen] = '\0';
-    }
-
-    // return success
-    return bufflen;
-}
-
-// check if PEC supported with the version value in SpecificationInfo() function
-// returns true once PEC is confirmed as working or not working
-bool AP_BattMonitor_SMBus_Maxell::check_pec_support()
-{
-    // exit immediately if we have already confirmed pec support
-    if (_pec_confirmed) {
-        return true;
-    }
-
-    // specification info
-    uint16_t data;
-    if (!read_word(BATTMONITOR_SMBUS_SPECIFICATION_INFO, data)) {
-        return false;
-    }
-
-    // extract version
-    uint8_t version = (data & 0xF0) >> 4;
-
-    // version less than 0011b (i.e. 3) do not support PEC
-    if (version < 3) {
-        _pec_supported = false;
-        _pec_confirmed = true;
-        return true;
-    }
-
     // check manufacturer name
     uint8_t buff[SMBUS_READ_BLOCK_MAXIMUM_TRANSFER + 1];
-    if (read_block(BATTMONITOR_SMBUS_MANUFACTURE_NAME, buff, true)) {
+    if (read_block(BATTMONITOR_SMBUS_MANUFACTURE_NAME, buff, SMBUS_READ_BLOCK_MAXIMUM_TRANSFER, true)) {
         // Hitachi maxell batteries do not support PEC
         if (strcmp((char*)buff, "Hitachi maxell") == 0) {
             _pec_supported = false;
-            _pec_confirmed = true;
-            return true;
+            // _pec_confirmed = true;
+            // return true;
         }
+        return true;
     }
-
-    // assume all other batteries support PEC
-	_pec_supported = true;
-	_pec_confirmed = true;
-	return true;
+    return false;
 }
 
